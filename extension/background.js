@@ -1,20 +1,9 @@
 import { DEFAULT_TEMPLATE } from "./defaults.js";
-import { extractVideoId, fetchTranscript } from "./transcript.js";
+import { extractVideoId, readTranscript } from "./transcript.js";
 
 const DEFAULTS = { langs: "fr,en", autoSend: true, template: DEFAULT_TEMPLATE };
 const CHATGPT = "https://chatgpt.com/";
 const YT_LINKS = ["*://*.youtube.com/watch*", "*://*.youtube.com/shorts/*", "*://*.youtube.com/live/*", "*://youtu.be/*"];
-
-// YouTube refuse (403) les appels dont l'Origin est chrome-extension://… : on la réécrit
-// pour les seules requêtes émises par l'extension elle-même (tabId -1) vers l'API player.
-const originRule = chrome.declarativeNetRequest.updateSessionRules({
-  removeRuleIds: [1],
-  addRules: [{
-    id: 1,
-    action: { type: "modifyHeaders", requestHeaders: [{ header: "Origin", operation: "set", value: "https://www.youtube.com" }] },
-    condition: { urlFilter: "||www.youtube.com/youtubei/v1/player", resourceTypes: ["xmlhttprequest"], tabIds: [-1] },
-  }],
-}).catch(e => console.warn("ytsum: règle Origin non installée", e));
 
 // ---------------------------------------------------------------- déclencheurs
 chrome.action.onClicked.addListener(tab => summarize(tab, tab.url));
@@ -55,12 +44,23 @@ async function summarize(tab, url) {
   }
   if (running.has(videoId)) return;
   running.add(videoId);
-  setBadge(tab, "…", "#868e96");
-  notify(tab, "loading", "Récupération du transcript…");
   try {
+    // Le transcript se lit dans une page de lecture : on en ouvre une si l'onglet n'en est pas
+    // une (lien, Short, autre site) et la suite se passe alors dans ce nouvel onglet.
+    const opened = !isWatchPage(tab?.url, videoId);
+    if (opened) {
+      tab = await chrome.tabs.create({ url: `https://www.youtube.com/watch?v=${videoId}`, index: tab ? tab.index + 1 : undefined, openerTabId: tab?.id });
+      // Muet le temps de la lecture du transcript : la vidéo peut démarrer toute seule.
+      await chrome.tabs.update(tab.id, { muted: true });
+      await loaded(tab.id);
+    }
+    setBadge(tab, "…", "#868e96");
+    notify(tab, "loading", "Récupération du transcript…");
     const cfg = { ...DEFAULTS, ...(await chrome.storage.sync.get(DEFAULTS)) };
     const langs = cfg.langs.split(",").map(s => s.trim()).filter(Boolean);
-    const video = await getTranscript(tab, videoId, langs);
+    const video = await getTranscript(tab, videoId, langs, opened).finally(() => {
+      if (opened) chrome.tabs.update(tab.id, { muted: false }).catch(() => {});
+    });
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
     const prompt = render(cfg.template, { ...video, url: videoUrl });
 
@@ -80,23 +80,33 @@ async function summarize(tab, url) {
   }
 }
 
-async function getTranscript(tab, videoId, langs) {
-  try {
-    await originRule;
-    return await fetchTranscript(videoId, langs, false);
-  } catch (first) {
-    // Secours : même requête depuis l'onglet YouTube lui-même (session de l'utilisateur).
-    if (!tab?.id || !/^https:\/\/www\.youtube\.com\//.test(tab.url || "")) throw first;
-    try {
-      const [{ result }] = await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        func: fetchTranscript, // autonome : sérialisée et exécutée dans la page
-        args: [videoId, langs, true],
-      });
-      if (result?.text) return result;
-    } catch {}
-    throw first;
-  }
+function isWatchPage(url, videoId) {
+  return /^https:\/\/www\.youtube\.com\/(watch\?|live\/)/.test(url || "") && extractVideoId(url) === videoId;
+}
+
+function loaded(tabId) {
+  return new Promise(resolve => {
+    const done = (id, info) => {
+      if (id !== tabId || info.status !== "complete") return;
+      chrome.tabs.onUpdated.removeListener(done);
+      resolve();
+    };
+    chrome.tabs.onUpdated.addListener(done);
+    chrome.tabs.get(tabId).then(t => t.status === "complete" && done(tabId, t)).catch(() => {});
+  });
+}
+
+async function getTranscript(tab, videoId, langs, pauseVideo) {
+  // Monde MAIN : la fonction a besoin du lecteur de la page (getPlayerResponse).
+  const [{ result } = {}] = await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    world: "MAIN",
+    func: readTranscript, // autonome : sérialisée et exécutée dans la page
+    args: [videoId, langs, pauseVideo],
+  });
+  if (!result) throw new Error("Lecture du transcript impossible dans cet onglet.");
+  if (result.error) throw new Error(result.error);
+  return result;
 }
 
 function render(template, v) {
@@ -144,7 +154,7 @@ function toast(kind, message) {
              transition: opacity .16s, transform .16s; }
         .t.show { opacity: 1; transform: none; }
         .i { width: 16px; height: 16px; flex: none; display: grid; place-items: center; }
-        .spin { width: 14px; height: 14px; border: 2px solid #495057; border-top-color: #ff6b6b; border-radius: 50%; animation: s .8s linear infinite; }
+        .spin { width: 14px; height: 14px; border: 2px solid #495057; border-top-color: #8c9bff; border-radius: 50%; animation: s .8s linear infinite; }
         .ok { color: #51cf66; } .error { color: #ff6b6b; }
         @keyframes s { to { transform: rotate(360deg); } }
       </style>
@@ -161,4 +171,4 @@ function toast(kind, message) {
 }
 
 // Pour les tests automatisés.
-globalThis.ytsum = { summarize, extractVideoId, fetchTranscript, originRule };
+globalThis.ytsum = { summarize, extractVideoId, readTranscript };

@@ -55,8 +55,13 @@ Le transcript et le prompt sont sauvegardés dans `./summaries/` (modifiable ave
 Le plus rapide au quotidien, sans serveur local : sur une vidéo YouTube, un clic
 sur l'icône ytsum (ou `Alt+S`) récupère le transcript, ouvre ChatGPT dans un
 nouvel onglet, y insère le prompt et l'envoie. Clic droit sur un lien ou une
-miniature YouTube → « Résumer cette vidéo avec ChatGPT » fait la même chose sans
-ouvrir la vidéo. Le prompt est aussi copié dans le presse-papier, en secours.
+miniature YouTube → « Résumer cette vidéo avec ChatGPT » fait la même chose en
+ouvrant la vidéo dans un nouvel onglet. Le prompt est aussi copié dans le
+presse-papier, en secours.
+
+Le transcript est lu par le lecteur YouTube de la page : l'extension lui fait
+charger les sous-titres un instant (leur état d'affichage est restauré). Pendant
+une publicité, le lecteur n'en fournit pas : attendre la fin de la pub.
 
 Installation (une seule fois) :
 
@@ -74,6 +79,10 @@ se change dans `chrome://extensions/shortcuts`.
 
 Après une modification du code dans `extension/`, relancer le script puis
 cliquer « Actualiser » sur la carte de l'extension.
+
+Publication sur le Chrome Web Store : `./scripts/package_chrome_extension.sh`
+produit le zip dans `dist/` ; les textes et images de la fiche sont dans `store/`,
+la politique de confidentialité dans `PRIVACY.md`.
 
 ## Personnaliser le prompt
 
